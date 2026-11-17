@@ -44,6 +44,7 @@ sudo reboot                          # 初回だけ (権限とアイコンの反
   | 配置 | 全体 (画像全部を表示、余白は白) / 枠いっぱい (縦横比そのまま、はみ出しを切る) / 引き伸ばし (縦横比を無視して枠に合わせる) |
   | 補正 | 実物寄せ (実際のパネルの発色に合わせて明るさを圧縮) / なし |
   | 回転 | 0 / 90 / 180 / 270° |
+  | 黒足し / 白足し / 黄足し / 赤足し | -5〜+5。変換結果に出てきた色だけ行が出る。+ でその色が増え、- で減る (横に今の割合) |
 
   V で等倍表示 (方向キーで移動) にすると、ディザの粒の細かさを確認できる。
   JPG は写真向け (Atkinson・枠いっぱい・補正あり)、PNG はイラスト向け (ディザなし・全体) で始まり、送った設定は次回の初期値になる
@@ -63,7 +64,7 @@ hexasign tpl bean name="ケニア AA" roast=中深煎り price=¥600
 hexasign send ~/clip/poster.png --mode illust   # まとめ設定: photo / illust / dither / mono
 hexasign send photo.jpg --colors mono --dither atkinson --strength 70   # 個別に指定
 #   --colors 4|mono  --dither none|floyd-steinberg|atkinson  --strength 10-100
-#   --fit fit|cover|stretch  --tune / --no-tune  --rotate 1 (90°)
+#   --fit fit|cover|stretch  --tune / --no-tune  --rotate 1 (90°)  --boost 黄=2,赤=-1
 hexasign render qr url=https://example.com -o /tmp/a.png   # 送らずに絵だけ作る
 ```
 

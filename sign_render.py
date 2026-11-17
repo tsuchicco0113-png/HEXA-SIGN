@@ -367,7 +367,11 @@ DITHERS = {"none": "なし", "floyd-steinberg": "Floyd-Steinberg", "atkinson": "
 FITS = {"fit": "全体", "cover": "枠いっぱい", "stretch": "引き伸ばし"}
 # 実物の発色に寄せたパレット (nfc-eink の tuned と同じ)。補正ONで使う
 TUNED = [(0, 0, 0), (160, 160, 160), (200, 128, 0), (160, 0, 0)]
-DEFAULT_OPTS = {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True}
+DEFAULT_OPTS = {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True,
+                "boost": [0, 0, 0, 0]}
+BOOST_MAX = 5           # 色足し: -5〜+5 (色インデックス順 黒/白/黄/赤)
+BOOST_STEP = 0.12       # 1段で「その色までの距離」を12%縮める (+) / 伸ばす (-)
+COLOR_NAMES = ["黒", "白", "黄", "赤"]
 PRESETS = {            # 旧 --mode の呼び名 (コマンド互換) → 設定
     "photo": {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True},
     "illust": {"colors": "4", "dither": "none", "strength": 100, "fit": "fit", "tune": False},
@@ -416,9 +420,12 @@ def dither_image(img, opts=None, width=W, height=H, num_colors=4):
         if ls is not None:
             lab[..., 0] *= ls
     pal = [tuple(float(v) for v in c) for c in rgb_to_lab(np.array(pal_rgb, dtype=np.uint8))]
+    # 色足し: 近さの判定に重みを掛ける (+ でその色が選ばれやすく、- で選ばれにくく)
+    boost = list(o.get("boost") or [0, 0, 0, 0]) + [0, 0, 0, 0]
+    wt = [max(0.2, 1.0 - BOOST_STEP * max(-BOOST_MAX, min(BOOST_MAX, int(boost[i])))) for i in use]
     k = max(0.0, min(1.0, o["strength"] / 100.0))
     if o["dither"] == "none" or k == 0:
-        d = ((lab[:, :, None, :] - np.array(pal)[None, None]) ** 2).sum(-1)
+        d = ((lab[:, :, None, :] - np.array(pal)[None, None]) ** 2).sum(-1) * np.array(wt)
         return np.array(use, dtype=np.uint8)[d.argmin(-1)]
     if o["dither"] == "atkinson":
         offs = [(0, 1, 1 / 8), (0, 2, 1 / 8), (1, -1, 1 / 8), (1, 0, 1 / 8), (1, 1, 1 / 8), (2, 0, 1 / 8)]
@@ -443,7 +450,7 @@ def dither_image(img, opts=None, width=W, height=H, num_colors=4):
             bi, bd = 0, 1e18
             for ci in range(n):
                 cl, ca, cb = pal[ci]
-                dd = (L - cl) ** 2 + (A - ca) ** 2 + (B - cb) ** 2
+                dd = ((L - cl) ** 2 + (A - ca) ** 2 + (B - cb) ** 2) * wt[ci]
                 if dd < bd:
                     bd, bi = dd, ci
             res[x] = bi

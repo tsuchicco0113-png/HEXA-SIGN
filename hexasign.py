@@ -8,7 +8,8 @@
                項目を ←→ で候補から選ぶ、ENTER で打ち込む、P で HEXA CLIP の最新を貼る
   2 画像     : ~/clip (HEXA CLIP で送ったファイル) / ~/Pictures / USBメモリ の画像
                確認画面で ↑↓ 項目 ←→ 変更: 色(4色/単色) / ディザ(なし/Floyd-Steinberg/Atkinson)
-               / 強さ(10〜100%) / 配置(全体/枠いっぱい/引き伸ばし) / 補正 / 回転。V で等倍表示 (ディザの粒を確認)
+               / 強さ(10〜100%) / 配置(全体/枠いっぱい/引き伸ばし) / 補正 / 回転
+               / 色足し(出てきた色ごとに -5〜+5)。V で等倍表示 (ディザの粒を確認)
   3 クリップ : HEXA CLIP で受け取った文章をそのまま掲示 (スマホで打った日本語を使える)
   4 履歴     : 送った絵をもう一度送る (同じ内容を何枚にも)
   どれも送る前に4色にした絵を本体で確認 → ENTER → EZ Sign をかざす → 完了まで動かさない
@@ -484,6 +485,7 @@ class Spec:
         self.path = kw.get("path")
         self.opts = dict(SR.DEFAULT_OPTS)
         self.opts.update(kw.get("opts") or SR.PRESETS.get(kw.get("mode") or "photo", {}))
+        self.opts["boost"] = list(self.opts.get("boost") or [0, 0, 0, 0])   # 別の画像と共有しない
         self.rotate = kw.get("rotate", 0)
         self._title = kw.get("title")
         self._src = None
@@ -549,6 +551,7 @@ class App:
         self.zoom_pos = [0, 0]
         self.converting = False
         self.conv_due = 0
+        self.seen_colors = set()
         self.tpl = None
         self.values = {}
         self.spec = None
@@ -806,13 +809,26 @@ class App:
         return img
 
     def preview_rows(self):
-        """画像の変換設定の行: (名前, 表示する値)"""
+        """画像の変換設定の行: (キー, 名前, 表示する値, 色インデックス or None)
+        色足しの行は、変換結果に出てきた色だけ (調整中に0%になっても消さない)"""
         o, s = self.spec.opts, self.spec
-        rows = [("配置", SR.FITS[o["fit"]]), ("色", SR.COLOR_MODES[o["colors"]][0]),
-                ("ディザ", {"none": "なし", "floyd-steinberg": "Floyd-S", "atkinson": "Atkinson"}[o["dither"]])]
+        rows = [("fit", "配置", SR.FITS[o["fit"]], None),
+                ("colors", "色", SR.COLOR_MODES[o["colors"]][0], None),
+                ("dither", "ディザ", {"none": "なし", "floyd-steinberg": "Floyd-S",
+                                     "atkinson": "Atkinson"}[o["dither"]], None)]
         if o["dither"] != "none":
-            rows.append(("強さ", f"{o['strength']}%"))
-        rows += [("補正", "実物寄せ" if o["tune"] else "なし"), ("回転", f"{s.rotate * 90}°")]
+            rows.append(("strength", "強さ", f"{o['strength']}%", None))
+        rows += [("tune", "補正", "実物寄せ" if o["tune"] else "なし", None),
+                 ("rotate", "回転", f"{s.rotate * 90}°", None)]
+        counts = np.bincount(self.preview_idx.ravel(), minlength=4)
+        usable = SR.COLOR_MODES[o["colors"]][1]
+        for i in usable:
+            if counts[i] > 0 or o["boost"][i]:
+                self.seen_colors.add(i)
+        for i in usable:
+            if i in self.seen_colors:
+                b = o["boost"][i]
+                rows.append((f"boost{i}", SR.COLOR_NAMES[i] + "足し", f"{b:+d}" if b else "±0", i))
         return rows
 
     def draw_preview(self):
@@ -847,33 +863,41 @@ class App:
             d.text((x, y), line, font=f, fill=FG)
             y += 15
         if s.kind == "image":
+            rows = self.preview_rows()
+            counts = np.bincount(self.preview_idx.ravel(), minlength=4)
+            tot = counts.sum()
+            sel = min(self.sel["opt"], len(rows) - 1)
+            n = 7                                         # 一度に見える行数 (多いときは動かす)
+            top = min(max(0, sel - n // 2), max(0, len(rows) - n))
             y += 1
-            for i, (name, val) in enumerate(self.preview_rows()):
-                on = i == self.sel["opt"] and not self.zoom
+            for i in range(top, min(len(rows), top + n)):
+                _key, name, val, ci = rows[i]
+                on = i == sel and not self.zoom
                 if on:
                     d.rounded_rectangle((x - 3, y - 1, LCD_W - 3, y + 14), 3, fill=SEL_BG, outline=ACC)
-                d.text((x, y), name, font=ui_font(10), fill=SUB)
+                if ci is not None:                        # 色足しの行: 色見本 + 割合
+                    d.rectangle((x, y + 3, x + 7, y + 10), fill=SR.PREVIEW_RGB[ci], outline=(110, 110, 110))
+                    d.text((x + 10, y), name, font=ui_font(10), fill=SUB)
+                    pc = f"{counts[ci] * 100 / tot:.0f}%"
+                    d.text((LCD_W - 6 - ui_font(9).getlength(pc), y + 1), pc, font=ui_font(9), fill=SUB)
+                else:
+                    d.text((x, y), name, font=ui_font(10), fill=SUB)
                 v = ("‹ " + val + " ›") if on else val
-                d.text((x + 38, y), v, font=ui_font(10, on), fill=FG if on else SUB)
-                y += 16
+                d.text((x + 42, y), v, font=ui_font(10, on), fill=FG if on else SUB)
+                y += 15
+            if top > 0:
+                d.polygon([(LCD_W - 10, TOP_H + 20), (LCD_W - 6, TOP_H + 16), (LCD_W - 2, TOP_H + 20)], fill=SUB)
+            if top + n < len(rows):
+                d.polygon([(LCD_W - 10, y - 1), (LCD_W - 6, y + 3), (LCD_W - 2, y - 1)], fill=SUB)
         else:
             y += 4
-        counts = np.bincount(self.preview_idx.ravel(), minlength=4)
-        tot = counts.sum()
-        parts = [(n, c * 100 // tot, col) for n, c, col in zip("黒白黄赤", counts, SR.PREVIEW_RGB)
-                 if c * 100 // tot]
-        if s.kind == "image":                        # 1行にまとめる
-            xx = x
-            for n, pc, col in parts:
-                d.rectangle((xx, y + 4, xx + 6, y + 10), fill=col, outline=(110, 110, 110))
-                t = f"{pc}"
-                d.text((xx + 8, y), t, font=ui_font(9), fill=SUB)
-                xx += 12 + ui_font(9).getlength(t) + 4
-        else:
-            for n, pc, col in parts:
-                d.rectangle((x, y + 3, x + 8, y + 11), fill=col, outline=(90, 90, 90))
-                d.text((x + 12, y), f"{n} {pc}%", font=ui_font(10), fill=SUB)
-                y += 13
+            counts = np.bincount(self.preview_idx.ravel(), minlength=4)
+            tot = counts.sum()
+            for name, c, col in zip(["黒", "白", "黄", "赤"], counts, SR.PREVIEW_RGB):
+                if c * 100 // tot:
+                    d.rectangle((x, y + 3, x + 8, y + 11), fill=col, outline=(90, 90, 90))
+                    d.text((x + 12, y), f"{name} {c * 100 // tot}%", font=ui_font(10), fill=SUB)
+                    y += 13
         return img
 
     def draw_send(self):
@@ -934,6 +958,8 @@ class App:
 
     # ---- 操作
     def open_preview(self, spec):
+        if spec is not self.spec:
+            self.seen_colors = set()
         self.spec = spec
         self.zoom = False
         self.fb.show(self.frame("変換中…", "しばらくお待ちください")[0])
@@ -1175,25 +1201,30 @@ class App:
             self.sel["opt"] = (self.sel["opt"] + 1) % n
         elif val in ("LEFT", "RIGHT"):
             step = 1 if val == "RIGHT" else -1
-            name = rows[self.sel["opt"]][0]
+            key = rows[min(self.sel["opt"], n - 1)][0]
             o = s.opts
 
             def cycle(lst, cur):
                 return lst[(lst.index(cur) + step) % len(lst)]
-            if name == "色":
-                o["colors"] = cycle(list(SR.COLOR_MODES), o["colors"])
-            elif name == "ディザ":
-                o["dither"] = cycle(list(SR.DITHERS), o["dither"])
-                if o["dither"] == "none" and self.sel["opt"] >= len(self.preview_rows()):
-                    self.sel["opt"] = len(self.preview_rows()) - 1
-            elif name == "強さ":
-                o["strength"] = min(100, max(10, o["strength"] + 10 * step))
-            elif name == "配置":
+            if key == "fit":
                 o["fit"] = cycle(list(SR.FITS), o["fit"])
-            elif name == "補正":
+            elif key == "colors":
+                o["colors"] = cycle(list(SR.COLOR_MODES), o["colors"])
+            elif key == "dither":
+                o["dither"] = cycle(list(SR.DITHERS), o["dither"])
+            elif key == "strength":
+                o["strength"] = min(100, max(10, o["strength"] + 10 * step))
+            elif key == "tune":
                 o["tune"] = not o["tune"]
-            elif name == "回転":
+            elif key == "rotate":
                 s.rotate = (s.rotate + step) % 4
+            elif key.startswith("boost"):
+                i = int(key[5:])
+                o["boost"][i] = max(-SR.BOOST_MAX, min(SR.BOOST_MAX, o["boost"][i] + step))
+            # 行の数が変わった時 (ディザなし↔あり) も同じ項目にカーソルを残す
+            keys = [r[0] for r in self.preview_rows()]
+            if key in keys:
+                self.sel["opt"] = keys.index(key)
             self.reconvert()
 
     def key_send(self, kind, val):
@@ -1220,7 +1251,7 @@ class App:
                 title = self.spec.title
                 if self.spec.kind == "image":
                     mode = "photo" if self.spec.path.lower().endswith((".jpg", ".jpeg", ".webp")) else "illust"
-                    self.last_opts[mode] = dict(self.spec.opts)
+                    self.last_opts[mode] = dict(self.spec.opts, boost=[0, 0, 0, 0])  # 色足しは画像ごと
                 if self.sent_count == 1:
                     try:
                         history_save(self.preview_idx, title, self.spec.to_json())
@@ -1288,6 +1319,18 @@ def parse_kv(pairs):
     return out
 
 
+def parse_boost(text):
+    names = {"黒": 0, "k": 0, "black": 0, "白": 1, "w": 1, "white": 1,
+             "黄": 2, "y": 2, "yellow": 2, "赤": 3, "r": 3, "red": 3}
+    out = [0, 0, 0, 0]
+    for part in filter(None, (t.strip() for t in text.split(","))):
+        k, _, v = part.partition("=")
+        if k.strip().lower() not in names or not v:
+            raise SystemExit(f"--boost の書き方: 黄=2,赤=-1  ({part})")
+        out[names[k.strip().lower()]] = max(-SR.BOOST_MAX, min(SR.BOOST_MAX, int(v)))
+    return out
+
+
 def cli_send(spec, args):
     idx = spec.indices()
     job = SendJob(spec.make_pixels, reader=args.reader, fake=args.fake)
@@ -1331,6 +1374,7 @@ def cli(args):
                 opts[k] = v
         if args.tune is not None:
             opts["tune"] = args.tune
+        opts["boost"] = parse_boost(args.boost)
         spec = Spec("image", path=args.target, opts=opts, rotate=args.rotate)
     if args.cmd == "render":
         out = args.output or "/tmp/hexasign.png"
@@ -1368,6 +1412,7 @@ def main():
     p.add_argument("--tune", action=argparse.BooleanOptionalAction, default=None,
                    help="実物の発色に寄せる補正")
     p.add_argument("--rotate", type=int, default=0, help="90°単位 (1=右に90°)")
+    p.add_argument("--boost", default="", help="色足し -5〜+5 例: 黄=2,赤=-1 (k/w/y/r でも可)")
     sub.add_parser("list", help="テンプレート一覧")
     a = ap.parse_args()
     if a.cmd:
