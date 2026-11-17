@@ -1,0 +1,40 @@
+#!/bin/sh
+# HEXA SIGN launcher (ランチャー/コマンド共通の入口)
+#   引数なし      → 画面アプリ (起動中はランチャーを止め、終わったら必ず再開)
+#   引数あり      → 画面なしのコマンド (hexasign tpl status status=準備中 など)
+# nfc-eink を入れた venv (~/nfc) の python で動かす
+DIR=$(dirname "$(readlink -f "$0")")
+APP="$DIR/hexasign.py"
+PY="${HEXASIGN_PY:-$HOME/nfc/bin/python}"
+[ -x "$PY" ] || PY=/usr/bin/python3
+LOG="$HOME/.local/share/hexasign/app.log"
+LAUNCHER=M5CardputerZero-APPLaunch
+mkdir -p "$(dirname "$LOG")"
+
+# 画面なしのコマンド (list / tpl / send / render、--fake tpl ... も)
+for a in "$@"; do
+  case "$a" in list|tpl|send|render) exec "$PY" "$APP" "$@" ;; esac
+done
+
+if [ -t 1 ]; then OUT=/dev/stdout; else OUT="$LOG"; fi
+
+resume_launcher() {
+  pkill -CONT -f "$LAUNCHER" 2>/dev/null || sudo -n pkill -CONT -f "$LAUNCHER" 2>/dev/null
+  return 0
+}
+trap 'resume_launcher; exit 130' INT TERM HUP
+
+in_groups() {
+  for g in video input plugdev; do
+    id -nG | tr ' ' '\n' | grep -qx "$g" || return 1
+  done
+}
+if in_groups; then
+  "$PY" "$APP" "$@" >>"$OUT" 2>&1
+else
+  sudo -n -E "$PY" "$APP" "$@" >>"$OUT" 2>&1
+fi
+RC=$?
+resume_launcher
+[ "$RC" -ne 0 ] && echo "$(date '+%F %T') hexasign exited with $RC (launcher resumed)" >>"$LOG"
+exit "$RC"
