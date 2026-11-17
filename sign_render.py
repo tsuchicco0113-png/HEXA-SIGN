@@ -364,7 +364,7 @@ def render(tid, values=None):
 # 画像の変換設定 (公式アプリの「色」「ディザリング」相当)
 COLOR_MODES = {"4": ("4色", [0, 1, 2, 3]), "mono": ("単色", [0, 1])}    # 使う色インデックス
 DITHERS = {"none": "なし", "floyd-steinberg": "Floyd-Steinberg", "atkinson": "Atkinson"}
-FITS = {"cover": "切り抜き", "fit": "全体"}
+FITS = {"fit": "全体", "cover": "枠いっぱい", "stretch": "引き伸ばし"}
 # 実物の発色に寄せたパレット (nfc-eink の tuned と同じ)。補正ONで使う
 TUNED = [(0, 0, 0), (160, 160, 160), (200, 128, 0), (160, 0, 0)]
 DEFAULT_OPTS = {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True}
@@ -386,8 +386,10 @@ def opts_label(o):
 def _fit(img, width, height, fit):
     from PIL import ImageOps
     img = img.convert("RGB")
-    if fit == "cover":
+    if fit == "cover":                           # 縦横比そのまま、はみ出た分を切る
         return ImageOps.fit(img, (width, height), Image.LANCZOS)
+    if fit == "stretch":                         # 縦横比を無視して枠に合わせる
+        return img.resize((width, height), Image.LANCZOS)
     t = img.copy()
     t.thumbnail((width, height), Image.LANCZOS)
     canvas = Image.new("RGB", (width, height), (255, 255, 255))

@@ -8,7 +8,7 @@
                項目を ←→ で候補から選ぶ、ENTER で打ち込む、P で HEXA CLIP の最新を貼る
   2 画像     : ~/clip (HEXA CLIP で送ったファイル) / ~/Pictures / USBメモリ の画像
                確認画面で ↑↓ 項目 ←→ 変更: 色(4色/単色) / ディザ(なし/Floyd-Steinberg/Atkinson)
-               / 強さ(10〜100%) / 配置 / 補正 / 回転。V で等倍表示 (ディザの粒を確認)
+               / 強さ(10〜100%) / 配置(全体/枠いっぱい/引き伸ばし) / 補正 / 回転。V で等倍表示 (ディザの粒を確認)
   3 クリップ : HEXA CLIP で受け取った文章をそのまま掲示 (スマホで打った日本語を使える)
   4 履歴     : 送った絵をもう一度送る (同じ内容を何枚にも)
   どれも送る前に4色にした絵を本体で確認 → ENTER → EZ Sign をかざす → 完了まで動かさない
@@ -544,7 +544,7 @@ class App:
         self.presets = load_presets()
         self.screen = "home"
         self.stack = []
-        self.sel = {"home": 0, "tpl": 0, "fields": 0, "img": 0, "clip": 0, "hist": 0, "opt": 1}
+        self.sel = {"home": 0, "tpl": 0, "fields": 0, "img": 0, "clip": 0, "hist": 0, "opt": 0}
         self.zoom = False
         self.zoom_pos = [0, 0]
         self.converting = False
@@ -808,12 +808,11 @@ class App:
     def preview_rows(self):
         """画像の変換設定の行: (名前, 表示する値)"""
         o, s = self.spec.opts, self.spec
-        rows = [("色", SR.COLOR_MODES[o["colors"]][0]),
+        rows = [("配置", SR.FITS[o["fit"]]), ("色", SR.COLOR_MODES[o["colors"]][0]),
                 ("ディザ", {"none": "なし", "floyd-steinberg": "Floyd-S", "atkinson": "Atkinson"}[o["dither"]])]
         if o["dither"] != "none":
             rows.append(("強さ", f"{o['strength']}%"))
-        rows += [("配置", SR.FITS[o["fit"]]), ("補正", "実物寄せ" if o["tune"] else "なし"),
-                 ("回転", f"{s.rotate * 90}°")]
+        rows += [("補正", "実物寄せ" if o["tune"] else "なし"), ("回転", f"{s.rotate * 90}°")]
         return rows
 
     def draw_preview(self):
@@ -1106,7 +1105,7 @@ class App:
         elif val == "ENTER" and items:
             p = items[self.sel["img"]]
             mode = "photo" if p.lower().endswith((".jpg", ".jpeg", ".webp")) else "illust"
-            self.sel["opt"] = 1                     # ディザの行から
+            self.sel["opt"] = 0                     # 配置の行から
             self.open_preview(Spec("image", path=p, opts=self.last_opts.get(mode) or SR.PRESETS[mode]))
 
     def key_clip(self, kind, val):
@@ -1364,7 +1363,8 @@ def main():
     p.add_argument("--colors", choices=list(SR.COLOR_MODES), help="4 / mono(単色)")
     p.add_argument("--dither", choices=list(SR.DITHERS))
     p.add_argument("--strength", type=int, help="ディザの強さ 10〜100")
-    p.add_argument("--fit", choices=list(SR.FITS), help="cover(切り抜き) / fit(全体)")
+    p.add_argument("--fit", choices=list(SR.FITS),
+                   help="fit(全体・余白は白) / cover(枠いっぱい・はみ出しを切る) / stretch(引き伸ばし)")
     p.add_argument("--tune", action=argparse.BooleanOptionalAction, default=None,
                    help="実物の発色に寄せる補正")
     p.add_argument("--rotate", type=int, default=0, help="90°単位 (1=右に90°)")

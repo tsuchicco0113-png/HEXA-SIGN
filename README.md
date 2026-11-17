@@ -41,12 +41,12 @@ sudo reboot                          # 初回だけ (権限とアイコンの反
   | 色 | 4色 (黒白黄赤) / 単色 (黒白) |
   | ディザ | なし / Floyd-Steinberg / Atkinson |
   | 強さ | 10〜100% (誤差を周りに広げる割合。下げるとざらつきが減り、平たい絵に近づく) |
-  | 配置 | 切り抜き (画面いっぱい) / 全体 (余白は白) |
+  | 配置 | 全体 (画像全部を表示、余白は白) / 枠いっぱい (縦横比そのまま、はみ出しを切る) / 引き伸ばし (縦横比を無視して枠に合わせる) |
   | 補正 | 実物寄せ (実際のパネルの発色に合わせて明るさを圧縮) / なし |
   | 回転 | 0 / 90 / 180 / 270° |
 
   V で等倍表示 (方向キーで移動) にすると、ディザの粒の細かさを確認できる。
-  JPG は写真向け (Atkinson・切り抜き・補正あり)、PNG はイラスト向け (ディザなし・全体) で始まり、送った設定は次回の初期値になる
+  JPG は写真向け (Atkinson・枠いっぱい・補正あり)、PNG はイラスト向け (ディザなし・全体) で始まり、送った設定は次回の初期値になる
 - ENTER → EZ Sign をかざす → ブロック送信 (15) → 書き換え (数十秒) の間は **動かさない**
 - 完了画面で ENTER → **同じ絵を次の札へ** (何枚も同じ内容にするとき)
 - 失敗したら置き直して ENTER (最初から送り直す。表示はいつでも上書きできる)
@@ -63,7 +63,7 @@ hexasign tpl bean name="ケニア AA" roast=中深煎り price=¥600
 hexasign send ~/clip/poster.png --mode illust   # まとめ設定: photo / illust / dither / mono
 hexasign send photo.jpg --colors mono --dither atkinson --strength 70   # 個別に指定
 #   --colors 4|mono  --dither none|floyd-steinberg|atkinson  --strength 10-100
-#   --fit cover|fit  --tune / --no-tune  --rotate 1 (90°)
+#   --fit fit|cover|stretch  --tune / --no-tune  --rotate 1 (90°)
 hexasign render qr url=https://example.com -o /tmp/a.png   # 送らずに絵だけ作る
 ```
 
