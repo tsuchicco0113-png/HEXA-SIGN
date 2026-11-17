@@ -361,11 +361,100 @@ def render(tid, values=None):
 
 
 # ---------------------------------------------------------------- 4色化
-IMAGE_MODES = {        # 画像を送るときの変換 (nfc-eink の convert_image に渡す)
-    "photo": {"label": "写真", "dither": "atkinson", "resize": "cover", "palette": "tuned"},
-    "illust": {"label": "イラスト", "dither": "none", "resize": "fit", "palette": "pure"},
-    "dither": {"label": "ディザ", "dither": "pillow", "resize": "fit", "palette": "pure"},
+# 画像の変換設定 (公式アプリの「色」「ディザリング」相当)
+COLOR_MODES = {"4": ("4色", [0, 1, 2, 3]), "mono": ("単色", [0, 1])}    # 使う色インデックス
+DITHERS = {"none": "なし", "floyd-steinberg": "Floyd-Steinberg", "atkinson": "Atkinson"}
+FITS = {"cover": "切り抜き", "fit": "全体"}
+# 実物の発色に寄せたパレット (nfc-eink の tuned と同じ)。補正ONで使う
+TUNED = [(0, 0, 0), (160, 160, 160), (200, 128, 0), (160, 0, 0)]
+DEFAULT_OPTS = {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True}
+PRESETS = {            # 旧 --mode の呼び名 (コマンド互換) → 設定
+    "photo": {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True},
+    "illust": {"colors": "4", "dither": "none", "strength": 100, "fit": "fit", "tune": False},
+    "dither": {"colors": "4", "dither": "floyd-steinberg", "strength": 100, "fit": "fit", "tune": False},
+    "mono": {"colors": "mono", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": False},
 }
+
+
+def opts_label(o):
+    s = f"{COLOR_MODES[o['colors']][0]} / {DITHERS[o['dither']]}"
+    if o["dither"] != "none":
+        s += f" {o['strength']}%"
+    return s
+
+
+def _fit(img, width, height, fit):
+    from PIL import ImageOps
+    img = img.convert("RGB")
+    if fit == "cover":
+        return ImageOps.fit(img, (width, height), Image.LANCZOS)
+    t = img.copy()
+    t.thumbnail((width, height), Image.LANCZOS)
+    canvas = Image.new("RGB", (width, height), (255, 255, 255))
+    canvas.paste(t, ((width - t.width) // 2, (height - t.height) // 2))
+    return canvas
+
+
+def dither_image(img, opts=None, width=W, height=H, num_colors=4):
+    """写真・イラスト → 色インデックス (numpy uint8)
+    opts: colors ("4"/"mono") / dither ("none"/"floyd-steinberg"/"atkinson")
+          strength (0〜100: 誤差を広げる強さ) / fit ("cover"/"fit") / tune (実物の発色に合わせる)
+    CIELAB 空間で一番近い色を選び、誤差を周りに配る (nfc-eink と同じ方式に強さを足したもの)"""
+    from nfc_eink.convert import _compute_l_scale, rgb_to_lab
+    o = dict(DEFAULT_OPTS)
+    o.update(opts or {})
+    use = COLOR_MODES[o["colors"]][1] if num_colors == 4 else [0, 1]
+    pal_rgb = [(TUNED if o["tune"] else PALETTE)[i] for i in use]
+    if o["colors"] == "mono" and o["tune"]:
+        pal_rgb = [(0, 0, 0), (170, 170, 170)]
+    fitted = np.asarray(_fit(img, width, height, o["fit"]), dtype=np.uint8)
+    lab = rgb_to_lab(fitted)
+    if o["tune"]:
+        ls = _compute_l_scale(pal_rgb)
+        if ls is not None:
+            lab[..., 0] *= ls
+    pal = [tuple(float(v) for v in c) for c in rgb_to_lab(np.array(pal_rgb, dtype=np.uint8))]
+    k = max(0.0, min(1.0, o["strength"] / 100.0))
+    if o["dither"] == "none" or k == 0:
+        d = ((lab[:, :, None, :] - np.array(pal)[None, None]) ** 2).sum(-1)
+        return np.array(use, dtype=np.uint8)[d.argmin(-1)]
+    if o["dither"] == "atkinson":
+        offs = [(0, 1, 1 / 8), (0, 2, 1 / 8), (1, -1, 1 / 8), (1, 0, 1 / 8), (1, 1, 1 / 8), (2, 0, 1 / 8)]
+    else:
+        offs = [(0, 1, 7 / 16), (1, -1, 3 / 16), (1, 0, 5 / 16), (1, 1, 1 / 16)]
+    offs = [(dy, dx, f * k) for dy, dx, f in offs]
+    h, w = height, width
+    work = lab.tolist()
+    out = [[0] * w for _ in range(h)]
+    n = len(pal)
+    for y in range(h):
+        row, res = work[y], out[y]
+        rev = y % 2 == 1                 # 1行ごとに向きを変える (誤差が片側に流れて筋になるのを防ぐ)
+        xs = range(w - 1, -1, -1) if rev else range(w)
+        sg = -1 if rev else 1
+        for x in xs:
+            px = row[x]
+            # 積もった誤差で色が振り切れないように (赤や黄のかたまりができるのを防ぐ)
+            L = min(100.0, max(0.0, px[0]))
+            A = min(80.0, max(-80.0, px[1]))
+            B = min(90.0, max(-90.0, px[2]))
+            bi, bd = 0, 1e18
+            for ci in range(n):
+                cl, ca, cb = pal[ci]
+                dd = (L - cl) ** 2 + (A - ca) ** 2 + (B - cb) ** 2
+                if dd < bd:
+                    bd, bi = dd, ci
+            res[x] = bi
+            cl, ca, cb = pal[bi]
+            el, ea, eb = L - cl, A - ca, B - cb
+            for dy, dx, f in offs:
+                ny, nx = y + dy, x + dx * sg
+                if ny < h and 0 <= nx < w:
+                    q = work[ny][nx]
+                    q[0] += el * f
+                    q[1] += ea * f
+                    q[2] += eb * f
+    return np.array(use, dtype=np.uint8)[np.array(out, dtype=np.uint8)]
 
 
 def exact_indices(img):
@@ -376,16 +465,12 @@ def exact_indices(img):
     return dist.argmin(-1).astype(np.uint8)
 
 
-def to_indices(img, mode=None, width=W, height=H, num_colors=4):
+def to_indices(img, opts=None, width=W, height=H, num_colors=4):
     """PIL画像 → 色インデックス (numpy uint8, shape=(height, width))
-    mode=None: テンプレート (最も近い色に置き換えるだけ)"""
-    if mode is None and img.size == (width, height) and num_colors == 4:
+    opts=None: テンプレート (最も近い色に置き換えるだけ)"""
+    if opts is None and img.size == (width, height) and num_colors == 4:
         return exact_indices(img)
-    from nfc_eink.convert import convert_image
-    m = IMAGE_MODES.get(mode or "illust")
-    px = convert_image(img.convert("RGB"), width, height, num_colors,
-                       dither=m["dither"], resize=m["resize"], palette=m["palette"])
-    return np.array(px, dtype=np.uint8)
+    return dither_image(img, opts or PRESETS["illust"], width, height, num_colors)
 
 
 def indices_to_rgb(idx, colors=PREVIEW_RGB):

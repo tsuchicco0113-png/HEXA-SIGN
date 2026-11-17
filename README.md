@@ -33,7 +33,20 @@ sudo reboot                          # 初回だけ (権限とアイコンの反
 
 - テンプレの項目: **←→ で候補から選ぶ** / ENTER で打ち込む / **P で HEXA CLIP の最新を貼る** / S で確認へ
 - 本体キーボードでは日本語を打てないので、日本語は「候補から選ぶ」か「スマホで打って HEXA CLIP で送る → P」
-- 送る前に 4色にした絵を本体で確認 (色の割合も表示)。画像は M で変換 (写真/イラスト/ディザ)、R で 90°回転
+- 送る前に 4色にした絵を本体で確認 (色の割合も表示)
+- 画像は確認画面で変換を調整できる (↑↓ で項目、←→ で変更。変えると数秒で描き直す)
+
+  | 項目 | 選べるもの |
+  |---|---|
+  | 色 | 4色 (黒白黄赤) / 単色 (黒白) |
+  | ディザ | なし / Floyd-Steinberg / Atkinson |
+  | 強さ | 10〜100% (誤差を周りに広げる割合。下げるとざらつきが減り、平たい絵に近づく) |
+  | 配置 | 切り抜き (画面いっぱい) / 全体 (余白は白) |
+  | 補正 | 実物寄せ (実際のパネルの発色に合わせて明るさを圧縮) / なし |
+  | 回転 | 0 / 90 / 180 / 270° |
+
+  V で等倍表示 (方向キーで移動) にすると、ディザの粒の細かさを確認できる。
+  JPG は写真向け (Atkinson・切り抜き・補正あり)、PNG はイラスト向け (ディザなし・全体) で始まり、送った設定は次回の初期値になる
 - ENTER → EZ Sign をかざす → ブロック送信 (15) → 書き換え (数十秒) の間は **動かさない**
 - 完了画面で ENTER → **同じ絵を次の札へ** (何枚も同じ内容にするとき)
 - 失敗したら置き直して ENTER (最初から送り直す。表示はいつでも上書きできる)
@@ -47,7 +60,10 @@ sudo reboot                          # 初回だけ (権限とアイコンの反
 hexasign list                                   # テンプレートと項目の一覧
 hexasign tpl status status=準備中 sub="14:00 再開"
 hexasign tpl bean name="ケニア AA" roast=中深煎り price=¥600
-hexasign send ~/clip/poster.png --mode illust   # photo / illust / dither、--rotate 1 で90°
+hexasign send ~/clip/poster.png --mode illust   # まとめ設定: photo / illust / dither / mono
+hexasign send photo.jpg --colors mono --dither atkinson --strength 70   # 個別に指定
+#   --colors 4|mono  --dither none|floyd-steinberg|atkinson  --strength 10-100
+#   --fit cover|fit  --tune / --no-tune  --rotate 1 (90°)
 hexasign render qr url=https://example.com -o /tmp/a.png   # 送らずに絵だけ作る
 ```
 

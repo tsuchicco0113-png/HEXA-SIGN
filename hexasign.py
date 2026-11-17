@@ -7,7 +7,8 @@
   1 テンプレ : 営業プレート / 本日の豆 / 名札 / お知らせ / QRコード / フリーテキスト
                項目を ←→ で候補から選ぶ、ENTER で打ち込む、P で HEXA CLIP の最新を貼る
   2 画像     : ~/clip (HEXA CLIP で送ったファイル) / ~/Pictures / USBメモリ の画像
-               M で変換 (写真/イラスト/ディザ)、R で回転
+               確認画面で ↑↓ 項目 ←→ 変更: 色(4色/単色) / ディザ(なし/Floyd-Steinberg/Atkinson)
+               / 強さ(10〜100%) / 配置 / 補正 / 回転。V で等倍表示 (ディザの粒を確認)
   3 クリップ : HEXA CLIP で受け取った文章をそのまま掲示 (スマホで打った日本語を使える)
   4 履歴     : 送った絵をもう一度送る (同じ内容を何枚にも)
   どれも送る前に4色にした絵を本体で確認 → ENTER → EZ Sign をかざす → 完了まで動かさない
@@ -18,7 +19,7 @@ usage:
   hexasign                          # 画面アプリ (ホームのアイコンと同じ)
   hexasign --fake                   # リーダーなしで画面の流れだけ試す
   hexasign tpl status status=準備中 # 画面なしで送る (SSH / cron 用)
-  hexasign send photo.jpg --mode photo
+  hexasign send photo.jpg --colors mono --dither atkinson --strength 70
   hexasign render bean name="ケニア AA" -o /tmp/a.png   # 送らずに絵だけ作る
   hexasign list                     # テンプレートと項目の一覧
 """
@@ -33,6 +34,7 @@ import select
 import signal
 import struct
 import sys
+import threading
 import time
 import urllib.request
 
@@ -480,10 +482,12 @@ class Spec:
         self.tid = kw.get("tid")
         self.values = dict(kw.get("values") or {})
         self.path = kw.get("path")
-        self.mode = kw.get("mode", "photo")
+        self.opts = dict(SR.DEFAULT_OPTS)
+        self.opts.update(kw.get("opts") or SR.PRESETS.get(kw.get("mode") or "photo", {}))
         self.rotate = kw.get("rotate", 0)
         self._title = kw.get("title")
         self._src = None
+        self._cache = {}                          # 変換結果 (送信時にもう一度変換しないように)
 
     @property
     def title(self):
@@ -499,23 +503,29 @@ class Spec:
 
     def to_json(self):
         return {"kind": self.kind, "tid": self.tid, "values": self.values,
-                "path": self.path, "mode": self.mode, "rotate": self.rotate}
+                "path": self.path, "opts": self.opts, "rotate": self.rotate}
 
     def indices(self, width=SR.W, height=SR.H, num_colors=4):
         if self.kind == "tpl":
             img = SR.render(self.tid, self.values)
             if (width, height, num_colors) == (SR.W, SR.H, 4):
                 return SR.exact_indices(img)
-            return SR.to_indices(img, "illust", width, height, num_colors)
+            return SR.to_indices(img, SR.PRESETS["illust"], width, height, num_colors)
         if self.kind == "hist":
             idx = np.array(Image.open(self.path))
             if idx.shape == (height, width) and num_colors == 4:
                 return idx
-            return SR.to_indices(SR.indices_to_rgb(idx, SR.PALETTE), "illust", width, height, num_colors)
+            return SR.to_indices(SR.indices_to_rgb(idx, SR.PALETTE), SR.PRESETS["illust"],
+                                 width, height, num_colors)
+        key = (width, height, num_colors, self.rotate, json.dumps(self.opts, sort_keys=True))
+        if key in self._cache:
+            return self._cache[key]
         if self._src is None:
             self._src = SR.load_image(self.path)
         src = self._src.rotate(-90 * self.rotate, expand=True) if self.rotate else self._src
-        return SR.to_indices(src, self.mode, width, height, num_colors)
+        idx = SR.dither_image(src, self.opts, width, height, num_colors)
+        self._cache = {key: idx}
+        return idx
 
     def make_pixels(self, info):
         return self.indices(info.width, info.height, info.num_colors)
@@ -534,7 +544,11 @@ class App:
         self.presets = load_presets()
         self.screen = "home"
         self.stack = []
-        self.sel = {"home": 0, "tpl": 0, "fields": 0, "img": 0, "clip": 0, "hist": 0}
+        self.sel = {"home": 0, "tpl": 0, "fields": 0, "img": 0, "clip": 0, "hist": 0, "opt": 1}
+        self.zoom = False
+        self.zoom_pos = [0, 0]
+        self.converting = False
+        self.conv_due = 0
         self.tpl = None
         self.values = {}
         self.spec = None
@@ -546,6 +560,7 @@ class App:
         self._thumbs = {}
         self.dirty = True
         self.confirm_quit = False
+        self.last_opts = {}                       # 最後に送った変換設定 (写真/イラスト別に覚える)
 
     # ---- 画面遷移
     def go(self, screen):
@@ -790,31 +805,75 @@ class App:
             np.array(Image.open(p)))), 164, TOP_H + 6)
         return img
 
+    def preview_rows(self):
+        """画像の変換設定の行: (名前, 表示する値)"""
+        o, s = self.spec.opts, self.spec
+        rows = [("色", SR.COLOR_MODES[o["colors"]][0]),
+                ("ディザ", {"none": "なし", "floyd-steinberg": "Floyd-S", "atkinson": "Atkinson"}[o["dither"]])]
+        if o["dither"] != "none":
+            rows.append(("強さ", f"{o['strength']}%"))
+        rows += [("配置", SR.FITS[o["fit"]]), ("補正", "実物寄せ" if o["tune"] else "なし"),
+                 ("回転", f"{s.rotate * 90}°")]
+        return rows
+
     def draw_preview(self):
         s = self.spec
-        hints = "ENTER 送信  ESC 戻る" + ("  M 変換  R 回転" if s.kind == "image" else "")
+        if s.kind == "image":
+            hints = ("V 縮小に戻す  方向キー 移動" if self.zoom else
+                     "↑↓ 項目 ←→ 変更  V 等倍  ENTER 送信  ESC 戻る")
+        else:
+            hints = "ENTER 送信  ESC 戻る"
         img, d = self.frame("送る前の確認", hints)
-        pv = SR.indices_to_rgb(self.preview_idx).resize((176, 132), Image.LANCZOS)
+        rgb = SR.indices_to_rgb(self.preview_idx)
+        if self.zoom:                                # 等倍 (ディザの粒の見え方を確認)
+            zx, zy = self.zoom_pos
+            pv = rgb.crop((zx, zy, zx + 176, zy + 132))
+        else:
+            pv = rgb.resize((176, 132), Image.LANCZOS)
         d.rectangle((3, TOP_H + 2, 3 + 176 + 3, TOP_H + 2 + 132 + 3), fill=(60, 64, 72))
         img.paste(pv, (5, TOP_H + 4))
+        if self.zoom:
+            # 全体のどこを見ているか
+            d.rectangle((150, TOP_H + 104, 178, TOP_H + 125), outline=FG, fill=(30, 34, 46))
+            fx, fy = self.zoom_pos[0] * 28 // 400, self.zoom_pos[1] * 21 // 300
+            d.rectangle((150 + fx, TOP_H + 104 + fy, 150 + fx + 12, TOP_H + 104 + fy + 9), fill=ACC)
+        if self.converting:
+            d.rounded_rectangle((52, TOP_H + 56, 132, TOP_H + 78), 5, fill=(30, 34, 46), outline=WARN)
+            d.text((62, TOP_H + 59), "変換中…", font=ui_font(12, True), fill=WARN)
         x = 188
-        y = TOP_H + 6
+        y = TOP_H + 4
         f = ui_font(11)
-        for line in SR.wrap(s.title, f, LCD_W - x - 4)[0][:3]:
+        lines = SR.wrap(s.title, f, LCD_W - x - 4)[0]
+        for line in lines[:1 if s.kind == "image" else 3]:
             d.text((x, y), line, font=f, fill=FG)
             y += 15
-        y += 4
         if s.kind == "image":
-            d.text((x, y), f"変換: {SR.IMAGE_MODES[s.mode]['label']}", font=f, fill=ACC)
-            y += 16
-            d.text((x, y), f"回転: {s.rotate * 90}°", font=f, fill=SUB)
-            y += 16
+            y += 1
+            for i, (name, val) in enumerate(self.preview_rows()):
+                on = i == self.sel["opt"] and not self.zoom
+                if on:
+                    d.rounded_rectangle((x - 3, y - 1, LCD_W - 3, y + 14), 3, fill=SEL_BG, outline=ACC)
+                d.text((x, y), name, font=ui_font(10), fill=SUB)
+                v = ("‹ " + val + " ›") if on else val
+                d.text((x + 38, y), v, font=ui_font(10, on), fill=FG if on else SUB)
+                y += 16
+        else:
+            y += 4
         counts = np.bincount(self.preview_idx.ravel(), minlength=4)
         tot = counts.sum()
-        for name, c, col in zip(["黒", "白", "黄", "赤"], counts, SR.PREVIEW_RGB):
-            if c * 100 // tot:
+        parts = [(n, c * 100 // tot, col) for n, c, col in zip("黒白黄赤", counts, SR.PREVIEW_RGB)
+                 if c * 100 // tot]
+        if s.kind == "image":                        # 1行にまとめる
+            xx = x
+            for n, pc, col in parts:
+                d.rectangle((xx, y + 4, xx + 6, y + 10), fill=col, outline=(110, 110, 110))
+                t = f"{pc}"
+                d.text((xx + 8, y), t, font=ui_font(9), fill=SUB)
+                xx += 12 + ui_font(9).getlength(t) + 4
+        else:
+            for n, pc, col in parts:
                 d.rectangle((x, y + 3, x + 8, y + 11), fill=col, outline=(90, 90, 90))
-                d.text((x + 12, y), f"{name} {c * 100 // tot}%", font=ui_font(10), fill=SUB)
+                d.text((x + 12, y), f"{n} {pc}%", font=ui_font(10), fill=SUB)
                 y += 13
         return img
 
@@ -877,6 +936,7 @@ class App:
     # ---- 操作
     def open_preview(self, spec):
         self.spec = spec
+        self.zoom = False
         self.fb.show(self.frame("変換中…", "しばらくお待ちください")[0])
         try:
             self.preview_idx = spec.indices()
@@ -886,6 +946,30 @@ class App:
         if self.screen != "preview":
             self.go("preview")
         self.dirty = True
+
+    def reconvert(self):
+        """設定を変えたら、少し待ってから裏で変換し直す (続けて押しても1回で済む)"""
+        self.conv_due = time.time() + 0.35
+        self.dirty = True
+
+    def conv_tick(self):
+        if self.conv_due and time.time() >= self.conv_due and not self.converting:
+            self.conv_due = 0
+            self.converting = True
+            spec = self.spec
+
+            def work():
+                try:
+                    idx = spec.indices()
+                    if spec is self.spec:
+                        self.preview_idx = idx
+                except Exception as e:            # noqa: BLE001
+                    print("convert failed:", e, flush=True)
+                    self.say(f"変換できません: {type(e).__name__}", 3)
+                finally:
+                    self.converting = False
+                    self.dirty = True
+            threading.Thread(target=work, daemon=True).start()
 
     def start_send(self):
         self.job = SendJob(self.spec.make_pixels, reader=self.args.reader, fake=self.args.fake)
@@ -1022,7 +1106,8 @@ class App:
         elif val == "ENTER" and items:
             p = items[self.sel["img"]]
             mode = "photo" if p.lower().endswith((".jpg", ".jpeg", ".webp")) else "illust"
-            self.open_preview(Spec("image", path=p, mode=mode))
+            self.sel["opt"] = 1                     # ディザの行から
+            self.open_preview(Spec("image", path=p, opts=self.last_opts.get(mode) or SR.PRESETS[mode]))
 
     def key_clip(self, kind, val):
         items = self.lists.get("clip") or []
@@ -1058,16 +1143,59 @@ class App:
     def key_preview(self, kind, val):
         s = self.spec
         if val == "ESC":
-            self.back()
-        elif val == "ENTER":
+            if self.zoom:
+                self.zoom = False
+            else:
+                self.conv_due = 0
+                self.back()
+            return
+        if val == "ENTER":
+            if self.converting or self.conv_due:
+                self.say("変換が終わるまでお待ちください")
+                return
             self.start_send()
-        elif s.kind == "image" and kind == "CHAR" and val.lower() == "m":
-            modes = list(SR.IMAGE_MODES)
-            s.mode = modes[(modes.index(s.mode) + 1) % len(modes)]
-            self.open_preview(s)
-        elif s.kind == "image" and kind == "CHAR" and val.lower() == "r":
-            s.rotate = (s.rotate + 1) % 4
-            self.open_preview(s)
+            return
+        if kind == "CHAR" and val.lower() == "v":
+            self.zoom = not self.zoom
+            if self.zoom:
+                self.zoom_pos = [(SR.W - 176) // 2, (SR.H - 132) // 2]
+            return
+        if self.zoom:                                # 等倍: 方向キーで見る場所を動かす
+            dx = {"LEFT": -40, "RIGHT": 40}.get(val, 0)
+            dy = {"UP": -30, "DOWN": 30}.get(val, 0)
+            self.zoom_pos = [min(max(0, self.zoom_pos[0] + dx), SR.W - 176),
+                             min(max(0, self.zoom_pos[1] + dy), SR.H - 132)]
+            return
+        if s.kind != "image":
+            return
+        rows = self.preview_rows()
+        n = len(rows)
+        if val == "UP":
+            self.sel["opt"] = (self.sel["opt"] - 1) % n
+        elif val == "DOWN":
+            self.sel["opt"] = (self.sel["opt"] + 1) % n
+        elif val in ("LEFT", "RIGHT"):
+            step = 1 if val == "RIGHT" else -1
+            name = rows[self.sel["opt"]][0]
+            o = s.opts
+
+            def cycle(lst, cur):
+                return lst[(lst.index(cur) + step) % len(lst)]
+            if name == "色":
+                o["colors"] = cycle(list(SR.COLOR_MODES), o["colors"])
+            elif name == "ディザ":
+                o["dither"] = cycle(list(SR.DITHERS), o["dither"])
+                if o["dither"] == "none" and self.sel["opt"] >= len(self.preview_rows()):
+                    self.sel["opt"] = len(self.preview_rows()) - 1
+            elif name == "強さ":
+                o["strength"] = min(100, max(10, o["strength"] + 10 * step))
+            elif name == "配置":
+                o["fit"] = cycle(list(SR.FITS), o["fit"])
+            elif name == "補正":
+                o["tune"] = not o["tune"]
+            elif name == "回転":
+                s.rotate = (s.rotate + step) % 4
+            self.reconvert()
 
     def key_send(self, kind, val):
         j = self.job
@@ -1091,6 +1219,9 @@ class App:
                 self.job_saved = True
                 self.sent_count += 1
                 title = self.spec.title
+                if self.spec.kind == "image":
+                    mode = "photo" if self.spec.path.lower().endswith((".jpg", ".jpeg", ".webp")) else "illust"
+                    self.last_opts[mode] = dict(self.spec.opts)
                 if self.sent_count == 1:
                     try:
                         history_save(self.preview_idx, title, self.spec.to_json())
@@ -1102,7 +1233,9 @@ class App:
         self.keys.flush()
         last = 0
         while True:
-            busy = self.screen == "send" or time.time() < self.toast[1] + 0.1
+            self.conv_tick()
+            busy = (self.screen == "send" or time.time() < self.toast[1] + 0.1
+                    or self.converting or bool(self.conv_due))
             for kind, val in self.keys.poll(0.05 if busy else 0.2):
                 if val == "QUIT":
                     return "script end"
@@ -1192,7 +1325,14 @@ def cli(args):
             raise SystemExit(f"テンプレートがありません: {args.target} (hexasign list で一覧)")
         spec = Spec("tpl", tid=args.target, values=parse_kv(args.kv))
     else:
-        spec = Spec("image", path=args.target, mode=args.mode, rotate=args.rotate)
+        opts = dict(SR.PRESETS[args.mode])
+        for k, v in (("colors", args.colors), ("dither", args.dither), ("strength", args.strength),
+                     ("fit", args.fit)):
+            if v is not None:
+                opts[k] = v
+        if args.tune is not None:
+            opts["tune"] = args.tune
+        spec = Spec("image", path=args.target, opts=opts, rotate=args.rotate)
     if args.cmd == "render":
         out = args.output or "/tmp/hexasign.png"
         SR.indices_to_rgb(spec.indices(), SR.PALETTE).save(out)
@@ -1219,7 +1359,14 @@ def main():
     p.add_argument("-o", "--output")
     p = sub.add_parser("send", help="画像ファイルを送る")
     p.add_argument("target")
-    p.add_argument("--mode", default="photo", choices=list(SR.IMAGE_MODES))
+    p.add_argument("--mode", default="photo", choices=list(SR.PRESETS),
+                   help="まとめ設定 (下の個別指定で上書き)")
+    p.add_argument("--colors", choices=list(SR.COLOR_MODES), help="4 / mono(単色)")
+    p.add_argument("--dither", choices=list(SR.DITHERS))
+    p.add_argument("--strength", type=int, help="ディザの強さ 10〜100")
+    p.add_argument("--fit", choices=list(SR.FITS), help="cover(切り抜き) / fit(全体)")
+    p.add_argument("--tune", action=argparse.BooleanOptionalAction, default=None,
+                   help="実物の発色に寄せる補正")
     p.add_argument("--rotate", type=int, default=0, help="90°単位 (1=右に90°)")
     sub.add_parser("list", help="テンプレート一覧")
     a = ap.parse_args()
