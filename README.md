@@ -41,7 +41,8 @@ sudo reboot                          # 初回だけ (権限とアイコンの反
   | 色 | 4色 (黒白黄赤) / 単色 (黒白) |
   | ディザ | なし / Floyd-Steinberg / Atkinson |
   | 強さ | 10〜100% (誤差を周りに広げる割合。下げるとざらつきが減り、平たい絵に近づく) |
-  | 配置 | 全体 (画像全部を表示、余白は白) / 枠いっぱい (縦横比そのまま、はみ出しを切る) / 引き伸ばし (縦横比を無視して枠に合わせる) |
+  | 配置 | 全体 (画像全部を表示、余白の色は下で選ぶ) / 枠いっぱい (縦横比そのまま、はみ出しを切る) / 引き伸ばし (縦横比を無視して枠に合わせる) |
+  | 余白 | 白 / 黒 / 黄 / 赤 (配置が「全体」のときだけ。単色では白/黒) |
   | 補正 | 実物寄せ (実際のパネルの発色に合わせて明るさを圧縮) / なし |
   | 回転 | 0 / 90 / 180 / 270° |
   | 黒足し / 白足し / 黄足し / 赤足し | -5〜+5。変換結果に出てきた色だけ行が出る。+ でその色が増え、- で減る (横に今の割合) |
@@ -64,7 +65,7 @@ hexasign tpl bean name="ケニア AA" roast=中深煎り price=¥600
 hexasign send ~/clip/poster.png --mode illust   # まとめ設定: photo / illust / dither / mono
 hexasign send photo.jpg --colors mono --dither atkinson --strength 70   # 個別に指定
 #   --colors 4|mono  --dither none|floyd-steinberg|atkinson  --strength 10-100
-#   --fit fit|cover|stretch  --tune / --no-tune  --rotate 1 (90°)  --boost 黄=2,赤=-1
+#   --fit fit|cover|stretch  --tune / --no-tune  --rotate 1 (90°)  --boost 黄=2,赤=-1  --pad 黒
 hexasign render qr url=https://example.com -o /tmp/a.png   # 送らずに絵だけ作る
 ```
 

@@ -8,7 +8,7 @@
                項目を ←→ で候補から選ぶ、ENTER で打ち込む、P で HEXA CLIP の最新を貼る
   2 画像     : ~/clip (HEXA CLIP で送ったファイル) / ~/Pictures / USBメモリ の画像
                確認画面で ↑↓ 項目 ←→ 変更: 色(4色/単色) / ディザ(なし/Floyd-Steinberg/Atkinson)
-               / 強さ(10〜100%) / 配置(全体/枠いっぱい/引き伸ばし) / 補正 / 回転
+               / 強さ(10〜100%) / 配置(全体/枠いっぱい/引き伸ばし) / 余白の色(全体のとき) / 補正 / 回転
                / 色足し(出てきた色ごとに -5〜+5)。V で等倍表示 (ディザの粒を確認)
   3 クリップ : HEXA CLIP で受け取った文章をそのまま掲示 (スマホで打った日本語を使える)
   4 履歴     : 送った絵をもう一度送る (同じ内容を何枚にも)
@@ -812,8 +812,11 @@ class App:
         """画像の変換設定の行: (キー, 名前, 表示する値, 色インデックス or None)
         色足しの行は、変換結果に出てきた色だけ (調整中に0%になっても消さない)"""
         o, s = self.spec.opts, self.spec
-        rows = [("fit", "配置", SR.FITS[o["fit"]], None),
-                ("colors", "色", SR.COLOR_MODES[o["colors"]][0], None),
+        rows = [("fit", "配置", SR.FITS[o["fit"]], None)]
+        if o["fit"] == "fit":                     # 全体表示のときだけ余白の色
+            pad = o.get("pad", 1) if o.get("pad", 1) in SR.COLOR_MODES[o["colors"]][1] else 1
+            rows.append(("pad", "余白", SR.COLOR_NAMES[pad], pad))
+        rows += [("colors", "色", SR.COLOR_MODES[o["colors"]][0], None),
                 ("dither", "ディザ", {"none": "なし", "floyd-steinberg": "Floyd-S",
                                      "atkinson": "Atkinson"}[o["dither"]], None)]
         if o["dither"] != "none":
@@ -871,10 +874,17 @@ class App:
             top = min(max(0, sel - n // 2), max(0, len(rows) - n))
             y += 1
             for i in range(top, min(len(rows), top + n)):
-                _key, name, val, ci = rows[i]
+                key, name, val, ci = rows[i]
                 on = i == sel and not self.zoom
                 if on:
                     d.rounded_rectangle((x - 3, y - 1, LCD_W - 3, y + 14), 3, fill=SEL_BG, outline=ACC)
+                if key == "pad":                          # 余白の色: 値の前に色見本
+                    d.text((x, y), name, font=ui_font(10), fill=SUB)
+                    d.rectangle((x + 42, y + 3, x + 49, y + 10), fill=SR.PREVIEW_RGB[ci], outline=(110, 110, 110))
+                    v = ("‹ " + val + " ›") if on else val
+                    d.text((x + 53, y), v, font=ui_font(10, on), fill=FG if on else SUB)
+                    y += 15
+                    continue
                 if ci is not None:                        # 色足しの行: 色見本 + 割合
                     d.rectangle((x, y + 3, x + 7, y + 10), fill=SR.PREVIEW_RGB[ci], outline=(110, 110, 110))
                     d.text((x + 10, y), name, font=ui_font(10), fill=SUB)
@@ -1208,6 +1218,10 @@ class App:
                 return lst[(lst.index(cur) + step) % len(lst)]
             if key == "fit":
                 o["fit"] = cycle(list(SR.FITS), o["fit"])
+            elif key == "pad":
+                usable = SR.COLOR_MODES[o["colors"]][1]
+                cur = o.get("pad", 1) if o.get("pad", 1) in usable else 1
+                o["pad"] = cycle([1, 0, 2, 3] if len(usable) == 4 else [1, 0], cur)
             elif key == "colors":
                 o["colors"] = cycle(list(SR.COLOR_MODES), o["colors"])
             elif key == "dither":
@@ -1375,6 +1389,9 @@ def cli(args):
         if args.tune is not None:
             opts["tune"] = args.tune
         opts["boost"] = parse_boost(args.boost)
+        if args.pad:
+            opts["pad"] = {"白": 1, "w": 1, "white": 1, "黒": 0, "k": 0, "black": 0,
+                           "黄": 2, "y": 2, "yellow": 2, "赤": 3, "r": 3, "red": 3}[args.pad.lower()]
         spec = Spec("image", path=args.target, opts=opts, rotate=args.rotate)
     if args.cmd == "render":
         out = args.output or "/tmp/hexasign.png"
@@ -1412,6 +1429,8 @@ def main():
     p.add_argument("--tune", action=argparse.BooleanOptionalAction, default=None,
                    help="実物の発色に寄せる補正")
     p.add_argument("--rotate", type=int, default=0, help="90°単位 (1=右に90°)")
+    p.add_argument("--pad", choices=["白", "黒", "黄", "赤", "w", "k", "y", "r", "white", "black",
+                                     "yellow", "red"], help="--fit fit の余白の色 (既定 白)")
     p.add_argument("--boost", default="", help="色足し -5〜+5 例: 黄=2,赤=-1 (k/w/y/r でも可)")
     sub.add_parser("list", help="テンプレート一覧")
     a = ap.parse_args()

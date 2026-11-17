@@ -368,7 +368,7 @@ FITS = {"fit": "全体", "cover": "枠いっぱい", "stretch": "引き伸ばし
 # 実物の発色に寄せたパレット (nfc-eink の tuned と同じ)。補正ONで使う
 TUNED = [(0, 0, 0), (160, 160, 160), (200, 128, 0), (160, 0, 0)]
 DEFAULT_OPTS = {"colors": "4", "dither": "atkinson", "strength": 100, "fit": "cover", "tune": True,
-                "boost": [0, 0, 0, 0]}
+                "boost": [0, 0, 0, 0], "pad": 1}
 BOOST_MAX = 5           # 色足し: -5〜+5 (色インデックス順 黒/白/黄/赤)
 BOOST_STEP = 0.12       # 1段で「その色までの距離」を12%縮める (+) / 伸ばす (-)
 COLOR_NAMES = ["黒", "白", "黄", "赤"]
@@ -387,18 +387,20 @@ def opts_label(o):
     return s
 
 
-def _fit(img, width, height, fit):
+def _fit(img, width, height, fit, pad_rgb=(255, 255, 255)):
+    """→ (画像, 絵のある範囲 (x0, y0, x1, y1))"""
     from PIL import ImageOps
     img = img.convert("RGB")
+    full = (0, 0, width, height)
     if fit == "cover":                           # 縦横比そのまま、はみ出た分を切る
-        return ImageOps.fit(img, (width, height), Image.LANCZOS)
+        return ImageOps.fit(img, (width, height), Image.LANCZOS), full
     if fit == "stretch":                         # 縦横比を無視して枠に合わせる
-        return img.resize((width, height), Image.LANCZOS)
-    t = img.copy()
-    t.thumbnail((width, height), Image.LANCZOS)
-    canvas = Image.new("RGB", (width, height), (255, 255, 255))
-    canvas.paste(t, ((width - t.width) // 2, (height - t.height) // 2))
-    return canvas
+        return img.resize((width, height), Image.LANCZOS), full
+    t = ImageOps.contain(img, (width, height), Image.LANCZOS)   # 小さい画像も枠まで拡大
+    canvas = Image.new("RGB", (width, height), pad_rgb)
+    x0, y0 = (width - t.width) // 2, (height - t.height) // 2
+    canvas.paste(t, (x0, y0))
+    return canvas, (x0, y0, x0 + t.width, y0 + t.height)
 
 
 def dither_image(img, opts=None, width=W, height=H, num_colors=4):
@@ -413,7 +415,11 @@ def dither_image(img, opts=None, width=W, height=H, num_colors=4):
     pal_rgb = [(TUNED if o["tune"] else PALETTE)[i] for i in use]
     if o["colors"] == "mono" and o["tune"]:
         pal_rgb = [(0, 0, 0), (170, 170, 170)]
-    fitted = np.asarray(_fit(img, width, height, o["fit"]), dtype=np.uint8)
+    pad = int(o.get("pad", 1))
+    if pad not in use:
+        pad = 1                                   # 単色で黄/赤の余白は使えない → 白
+    fitted, box = _fit(img, width, height, o["fit"], PALETTE[pad])
+    fitted = np.asarray(fitted, dtype=np.uint8)
     lab = rgb_to_lab(fitted)
     if o["tune"]:
         ls = _compute_l_scale(pal_rgb)
@@ -426,7 +432,7 @@ def dither_image(img, opts=None, width=W, height=H, num_colors=4):
     k = max(0.0, min(1.0, o["strength"] / 100.0))
     if o["dither"] == "none" or k == 0:
         d = ((lab[:, :, None, :] - np.array(pal)[None, None]) ** 2).sum(-1) * np.array(wt)
-        return np.array(use, dtype=np.uint8)[d.argmin(-1)]
+        return _pad(np.array(use, dtype=np.uint8)[d.argmin(-1)], box, pad)
     if o["dither"] == "atkinson":
         offs = [(0, 1, 1 / 8), (0, 2, 1 / 8), (1, -1, 1 / 8), (1, 0, 1 / 8), (1, 1, 1 / 8), (2, 0, 1 / 8)]
     else:
@@ -463,7 +469,15 @@ def dither_image(img, opts=None, width=W, height=H, num_colors=4):
                     q[0] += el * f
                     q[1] += ea * f
                     q[2] += eb * f
-    return np.array(use, dtype=np.uint8)[np.array(out, dtype=np.uint8)]
+    return _pad(np.array(use, dtype=np.uint8)[np.array(out, dtype=np.uint8)], box, pad)
+
+
+def _pad(idx, box, pad):
+    """余白を選んだ色でぬりつぶす (ディザや補正で色が混ざらないように、変換後に上書き)"""
+    x0, y0, x1, y1 = box
+    out = np.full_like(idx, pad)
+    out[y0:y1, x0:x1] = idx[y0:y1, x0:x1]
+    return out
 
 
 def exact_indices(img):
