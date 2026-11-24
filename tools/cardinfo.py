@@ -24,15 +24,14 @@ def describe(tag):
     print("-" * 40)
     print("nfcpy の表示 :", tag)
     kind = type(tag).__name__
-    if kind.startswith("Type3"):
-        print("種類         : FeliCa (Type3)")
+    if getattr(tag, "type", "") == "Type3Tag":          # FeliCa (Lite-S などは子クラス名になる)
+        print("種類         : FeliCa (Type3)", getattr(tag, "product", ""))
         print("IDm          :", tag.idm.hex().upper())
         print("PMm          :", tag.pmm.hex().upper())
         try:
             codes = tag.request_system_code()
-        except Exception as e:                  # noqa: BLE001
-            codes = []
-            print("システムコード: 取得できず", e)
+        except Exception:                       # noqa: BLE001  (Lite-S などは非対応)
+            codes = [tag.sys] if getattr(tag, "sys", None) is not None else []
         for c in codes:
             print(f"システムコード: {c:04X}  {SYSTEMS.get(c, '')}")
     else:
